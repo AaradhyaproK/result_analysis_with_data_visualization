@@ -6,20 +6,28 @@ import plotly.express as px
 import plotly.graph_objects as go
 from collections import defaultdict
 import io
+import json
+import datetime
+from typing import Dict, List, Optional
+import hashlib
+import requests
+import time
 
-# Page configuration
+# -----------------------------------------------------------------------------
+# 1. PAGE CONFIGURATION & CSS
+# -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Advanced Student Result Analyzer",
+    page_title="Student Result Analyzer Pro",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# FIXED CSS: Added explicit text colors for the profile card to handle Dark Mode
 st.markdown("""
 <style>
     .main-header {
-        font-size: 3rem;
+        font-size: 2.5rem;
         color: #1f77b4;
         text-align: center;
         margin-bottom: 2rem;
@@ -29,29 +37,286 @@ st.markdown("""
         padding: 1rem;
         border-radius: 10px;
         border-left: 5px solid #1f77b4;
+        margin-bottom: 1rem;
+        color: #333; /* Ensure text is dark in metric cards */
     }
-    .top-student {
-        background-color: #e8f5e8;
-        padding: 0.5rem;
-        border-radius: 5px;
-        margin: 0.2rem 0;
+    .role-badge {
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        font-weight: bold;
+        margin-left: 1rem;
+        font-size: 1rem;
     }
-    .failed-student {
-        background-color: #ffe8e8;
-        padding: 0.5rem;
-        border-radius: 5px;
-        margin: 0.2rem 0;
+    .teacher-badge { background-color: #4CAF50; color: white; }
+    .student-badge { background-color: #2196F3; color: white; }
+    
+    /* PROFILE CARD CSS FIXED FOR DARK MODE */
+    .profile-card {
+        background-color: #ffffff;
+        padding: 1.5rem;
+        border-radius: 10px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+        border-left: 5px solid #2196F3;
+    }
+    /* Force text colors inside the card to be dark */
+    .profile-card h2 {
+        color: #1f77b4 !important;
+        margin-top: 0;
+        margin-bottom: 10px;
+    }
+    .profile-card p {
+        color: #444444 !important;
+        font-size: 1.1rem;
+        margin: 0;
+    }
+    .profile-card strong {
+        color: #2c3e50 !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
+# -----------------------------------------------------------------------------
+# 2. FIREBASE CONFIGURATION & MANAGER
+# -----------------------------------------------------------------------------
+FIREBASE_CONFIG = {}
+
+FIREBASE_REST_URL = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_CONFIG['projectId']}/databases/(default)/documents"
+
+class FirebaseManager:
+    def __init__(self):
+        self.id_token = st.session_state.get('id_token')
+        self.user_id = st.session_state.get('user_id')
+        self.initialize_firebase()
+    
+    def initialize_firebase(self):
+        try:
+            requests.get(f"{FIREBASE_REST_URL}/test_connection")
+        except Exception:
+            pass
+    
+    def hash_password(self, password: str) -> str:
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def _set_session_token(self, token, uid):
+        self.id_token = token
+        self.user_id = uid
+        st.session_state['id_token'] = token
+        st.session_state['user_id'] = uid
+
+    def sign_in_with_email_password(self, email: str, password: str):
+        try:
+            auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_CONFIG['apiKey']}"
+            auth_data = {"email": email, "password": password, "returnSecureToken": True}
+            response = requests.post(auth_url, json=auth_data)
+            result = response.json()
+            if response.status_code == 200:
+                self._set_session_token(result.get('idToken'), result.get('localId'))
+                return True, result
+            else:
+                return False, result.get('error', {}).get('message', 'Unknown error')
+        except Exception as e:
+            return False, str(e)
+    
+    def create_user_with_email_password(self, email: str, password: str, name: str):
+        try:
+            auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={FIREBASE_CONFIG['apiKey']}"
+            auth_data = {"email": email, "password": password, "displayName": name, "returnSecureToken": True}
+            response = requests.post(auth_url, json=auth_data)
+            result = response.json()
+            if response.status_code == 200:
+                self._set_session_token(result.get('idToken'), result.get('localId'))
+                return True, result
+            else:
+                return False, result.get('error', {}).get('message', 'Unknown error')
+        except Exception as e:
+            return False, str(e)
+    
+    def firestore_request(self, method, path, data=None):
+        if not self.id_token: return None
+        url = f"{FIREBASE_REST_URL}/{path}"
+        headers = {"Authorization": f"Bearer {self.id_token}", "Content-Type": "application/json"}
+        try:
+            if method == "GET": response = requests.get(url, headers=headers)
+            elif method == "POST": response = requests.post(url, headers=headers, json=data)
+            elif method == "PATCH": response = requests.patch(url, headers=headers, json=data)
+            elif method == "DELETE": response = requests.delete(url, headers=headers)
+            else: return None
+            
+            if response.status_code not in [200, 201, 409]:
+                if response.status_code != 404:
+                    st.error(f"DB Error {response.status_code}: {response.text}")
+                return None
+            return response.json()
+        except Exception as e:
+            st.error(f"Request Exception: {str(e)}")
+            return None
+    
+    def _to_firestore_value(self, value):
+        if value is None: return {"nullValue": None}
+        elif isinstance(value, bool): return {"booleanValue": value}
+        elif isinstance(value, int): return {"integerValue": str(value)}
+        elif isinstance(value, float): return {"doubleValue": value}
+        elif isinstance(value, str): return {"stringValue": value}
+        elif isinstance(value, datetime.datetime): return {"timestampValue": value.isoformat() + "Z"}
+        elif isinstance(value, list): return {"arrayValue": {"values": [self._to_firestore_value(v) for v in value]}}
+        elif isinstance(value, dict): return {"mapValue": {"fields": {k: self._to_firestore_value(v) for k, v in value.items()}}}
+        else: return {"stringValue": str(value)}
+
+    def create_user(self, email: str, password: str, role: str, name: str):
+        success, result = self.create_user_with_email_password(email, password, name)
+        if not success:
+            st.error(f"❌ Auth Creation Failed: {result}")
+            return None
+        
+        user_id = result.get('localId')
+        user_data = {
+            "fields": {
+                "email": self._to_firestore_value(email),
+                "role": self._to_firestore_value(role.lower()),
+                "name": self._to_firestore_value(name),
+                "user_id": self._to_firestore_value(user_id),
+                "created_at": self._to_firestore_value(datetime.datetime.utcnow()),
+                "last_login": self._to_firestore_value(datetime.datetime.utcnow())
+            }
+        }
+        
+        response = self.firestore_request("POST", f"users?documentId={user_id}", user_data)
+        if not response or 'error' in response:
+             response = self.firestore_request("PATCH", f"users/{user_id}", user_data)
+
+        if response:
+            return user_id
+        return None
+    
+    def verify_user(self, email: str, password: str):
+        success, result = self.sign_in_with_email_password(email, password)
+        if not success: return False, f"Login failed: {result}"
+        
+        user_doc = self.firestore_request("GET", f"users/{self.user_id}")
+        if not user_doc: return False, "User profile not found."
+        
+        role = user_doc.get('fields', {}).get('role', {}).get('stringValue', '')
+        if not role: return False, "User role missing."
+
+        user_data = {
+            'email': user_doc.get('fields', {}).get('email', {}).get('stringValue', ''),
+            'role': role,
+            'name': user_doc.get('fields', {}).get('name', {}).get('stringValue', ''),
+            'uid': self.user_id
+        }
+        return True, user_data
+
+    def save_result_data(self, file_name: str, exam_tag: str, students_data: List[Dict], uploaded_by: str, summary: Dict):
+        if not self.id_token: return None
+        
+        batch_data = {
+            "fields": {
+                "file_name": self._to_firestore_value(file_name),
+                "exam_tag": self._to_firestore_value(exam_tag),
+                "uploaded_by": self._to_firestore_value(uploaded_by),
+                "uploaded_at": self._to_firestore_value(datetime.datetime.utcnow()),
+                "total_students": self._to_firestore_value(len(students_data)),
+                "students_data": self._to_firestore_value(students_data),
+                "summary": self._to_firestore_value(summary)
+            }
+        }
+        
+        doc_id = f"result_{int(time.time())}_{hashlib.md5(file_name.encode()).hexdigest()[:10]}"
+        with st.spinner("Saving data to Cloud..."):
+            result = self.firestore_request("POST", f"result_files?documentId={doc_id}", batch_data)
+        
+        if result:
+            st.success("✅ Saved successfully!")
+            return doc_id
+        return None
+
+    def get_all_result_files(self):
+        if not self.id_token: return []
+        result = self.firestore_request("GET", "result_files")
+        if not result or 'documents' not in result: return []
+        
+        files = []
+        for doc in result['documents']:
+            file_data = self._convert_from_firestore(doc)
+            file_data['id'] = doc['name'].split('/')[-1]
+            files.append(file_data)
+        return sorted(files, key=lambda x: x.get('uploaded_at', ''), reverse=True)
+
+    def get_student_history(self, search_term: str):
+        files = self.get_all_result_files()
+        student_history = {}
+        
+        search_term = search_term.lower().strip()
+        
+        for file_data in files:
+            exam_tag = file_data.get('exam_tag', file_data.get('file_name', 'Unknown Exam'))
+            upload_date = file_data.get('uploaded_at')
+            
+            for student in file_data.get('students_data', []):
+                s_name = student.get('Name', '').lower()
+                s_prn = student.get('PRN', '').strip()
+                
+                if search_term in s_name or search_term == s_prn.lower():
+                    if s_prn not in student_history:
+                        student_history[s_prn] = {
+                            'Name': student.get('Name'),
+                            'PRN': s_prn,
+                            'Mother': student.get('Mother Name'),
+                            'Results': []
+                        }
+                    
+                    result_entry = {
+                        'Exam': exam_tag,
+                        'Date': upload_date,
+                        'SGPA': student.get('SGPA', 0),
+                        'Result': student.get('Result Status'),
+                        'Credits': student.get('Credits'),
+                        'Seat': student.get('Seat No'),
+                        'Subjects': student.get('Subjects', [])
+                    }
+                    student_history[s_prn]['Results'].append(result_entry)
+        
+        for prn in student_history:
+            student_history[prn]['Results'].sort(key=lambda x: x['Date'] if isinstance(x['Date'], datetime.datetime) else datetime.datetime.min)
+            
+        return list(student_history.values())
+
+    def _convert_from_firestore(self, doc):
+        fields = doc.get('fields', {})
+        result = {}
+        for key, value in fields.items():
+            if 'stringValue' in value: result[key] = value['stringValue']
+            elif 'integerValue' in value: result[key] = int(value['integerValue'])
+            elif 'doubleValue' in value: result[key] = float(value['doubleValue'])
+            elif 'booleanValue' in value: result[key] = value['booleanValue']
+            elif 'timestampValue' in value:
+                try: result[key] = datetime.datetime.fromisoformat(value['timestampValue'].replace('Z', '+00:00'))
+                except: result[key] = value['timestampValue']
+            elif 'arrayValue' in value:
+                vals = value['arrayValue'].get('values', [])
+                result[key] = [self._convert_single_value(i) for i in vals]
+            elif 'mapValue' in value:
+                result[key] = self._convert_from_firestore({'fields': value['mapValue']['fields']})
+        return result
+
+    def _convert_single_value(self, value):
+        if 'stringValue' in value: return value['stringValue']
+        elif 'integerValue' in value: return int(value['integerValue'])
+        elif 'doubleValue' in value: return float(value['doubleValue'])
+        elif 'booleanValue' in value: return value['booleanValue']
+        elif 'mapValue' in value: return self._convert_from_firestore({'fields': value['mapValue']['fields']})
+        return None
+
+# -----------------------------------------------------------------------------
+# 3. ADVANCED RESULT ANALYZER
+# -----------------------------------------------------------------------------
 class AdvancedResultAnalyzer:
     def __init__(self):
         self.students_data = []
         self.raw_text = ""
     
     def extract_text_from_pdf(self, uploaded_file):
-        """Extract text from uploaded PDF file"""
         try:
             pdf_reader = PyPDF2.PdfReader(uploaded_file)
             text = ""
@@ -60,538 +325,338 @@ class AdvancedResultAnalyzer:
             self.raw_text = text
             return text
         except Exception as e:
-            st.error(f"Error reading PDF: {str(e)}")
+            st.error(f"❌ Error reading PDF: {str(e)}")
             return None
     
     def is_valid_sgpa(self, sgpa_value):
-        """Check if SGPA is valid and present"""
-        if isinstance(sgpa_value, str):
-            return sgpa_value not in ['N/A', '--', '', 'FF', 'AB', 'IC', 'ABS']
-        elif isinstance(sgpa_value, (int, float)):
-            return sgpa_value > 0
-        return False
+        try: return float(sgpa_value) > 0
+        except: return False
     
     def parse_comprehensive_data(self, text):
-        """Parse comprehensive student data including subject grades"""
         students = []
+        blocks = re.split(r'(?=SEAT NO\.:)', text)
         
-        # Split by student sections using seat numbers
-        seat_pattern = r'SEAT NO\.: (T\d+)'
-        student_sections = re.split(seat_pattern, text)
-        
-        for i in range(1, len(student_sections), 2):
+        for block in blocks:
+            if "SEAT NO.:" not in block: continue
             try:
-                if i + 1 < len(student_sections):
-                    seat_no = student_sections[i]
-                    section_text = student_sections[i + 1]
-                    
-                    # Extract basic info
-                    name_match = re.search(r'NAME : ([A-Z\s]+) MOTHER', section_text)
-                    name = name_match.group(1).strip() if name_match else "Unknown"
-                    
-                    mother_match = re.search(r'MOTHER : ([A-Z\s]+) PRN', section_text)
-                    mother = mother_match.group(1).strip() if mother_match else "Unknown"
-                    
-                    prn_match = re.search(r'PRN :([A-Z0-9]+)', section_text)
-                    prn = prn_match.group(1).strip() if prn_match else "Unknown"
-                    
-                    # Extract SGPA - handle various formats
-                    sgpa_match = re.search(r'THIRD YEAR SGPA : ([\d.-]+|N/A|--)', section_text)
-                    sgpa_raw = sgpa_match.group(1) if sgpa_match else "0.0"
-                    
-                    # Convert SGPA to float, handle invalid cases
-                    try:
-                        sgpa = float(sgpa_raw) if self.is_valid_sgpa(sgpa_raw) else 0.0
-                    except (ValueError, TypeError):
-                        sgpa = 0.0
-                    
-                    # Extract credits
-                    credits_match = re.search(r'TOTAL CREDITS EARNED : (\d+)', section_text)
-                    credits = credits_match.group(1) if credits_match else "0"
-                    
-                    # Parse subject grades
-                    subjects = self.parse_subject_grades(section_text)
-                    
-                    # Calculate passed/failed subjects
-                    passed_subjects = sum(1 for sub in subjects if sub['Grade'] not in ['F', 'FF', 'AB', 'IC', 'ABS'])
-                    total_subjects = len(subjects)
-                    
-                    # Determine result status - FAIL if SGPA is not valid/present
-                    has_valid_sgpa = self.is_valid_sgpa(sgpa_raw) and sgpa > 0
-                    all_subjects_passed = passed_subjects == total_subjects if total_subjects > 0 else False
-                    
-                    result_status = 'Pass' if (has_valid_sgpa and all_subjects_passed) else 'Fail'
-                    
-                    students.append({
-                        'Seat No': seat_no,
-                        'Name': name,
-                        "Mother's Name": mother,
-                        'PRN': prn,
-                        'SGPA': sgpa,
-                        'SGPA_Raw': sgpa_raw,  # Keep original value for display
-                        'Credits': int(credits),
-                        'Subjects': subjects,
-                        'Passed Subjects': passed_subjects,
-                        'Total Subjects': total_subjects,
-                        'Result Status': result_status,
-                        'Has Valid SGPA': has_valid_sgpa
-                    })
-            except Exception as e:
-                st.warning(f"Error parsing student {i//2 + 1}: {str(e)}")
-                continue
-        
+                seat_match = re.search(r'SEAT NO\.:\s*([A-Z0-9]+)', block)
+                seat_no = seat_match.group(1) if seat_match else "Unknown"
+                name_match = re.search(r'NAME\s*:\s*(.*?)\s+MOTHER', block)
+                name = name_match.group(1).strip() if name_match else "Unknown"
+                mother_match = re.search(r'MOTHER\s*:\s*(.*?)\s+PRN', block)
+                mother = mother_match.group(1).strip() if mother_match else "Unknown"
+                prn_match = re.search(r'PRN\s*:\s*([A-Z0-9]+)', block)
+                prn = prn_match.group(1).strip() if prn_match else "Unknown"
+                sgpa_match = re.search(r'(?:FIRST|SECOND|THIRD|FOURTH)?\s*YEAR\s*SGPA\s*:\s*([0-9\.]+|--)', block)
+                sgpa_raw = sgpa_match.group(1) if sgpa_match else "0.0"
+                try: sgpa = float(sgpa_raw)
+                except: sgpa = 0.0
+                credits_match = re.search(r'TOTAL CREDITS EARNED\s*:\s*(\d+)', block)
+                credits = int(credits_match.group(1)) if credits_match else 0
+                
+                subjects = self.parse_subject_grades(block)
+                passed_subjects = sum(1 for sub in subjects if sub['Grade'] not in ['F', 'FF', 'AB', 'IC', 'ABS', 'Fail'])
+                total_subjects = len(subjects)
+                has_valid_sgpa = sgpa > 0
+                result_status = 'Pass' if has_valid_sgpa else 'Fail'
+                
+                students.append({
+                    'Seat No': seat_no, 'Name': name, 'Mother Name': mother, 'PRN': prn,
+                    'SGPA': sgpa, 'SGPA_Raw': sgpa_raw, 'Credits': credits,
+                    'Subjects': subjects, 'Passed Subjects': passed_subjects,
+                    'Total Subjects': total_subjects, 'Result Status': result_status,
+                    'Has Valid SGPA': has_valid_sgpa
+                })
+            except Exception: continue
         return students
     
-    def parse_subject_grades(self, section_text):
-        """Parse subject-wise grades for a student"""
+    def parse_subject_grades(self, block_text):
         subjects = []
-        
-        # Pattern to match subject entries
-        subject_pattern = r'(\d{6}[A-Z]?)\s+([A-Z\s&\.]+)\s+(?:\d+/\d+\s+){2}(\d+/\d+)\s+(?:.*?){0,5}?(\b[A-Z\+]+\b)'
-        matches = re.findall(subject_pattern, section_text)
-        
-        for match in matches:
-            course_code, course_name, total_marks, grade = match
-            subjects.append({
-                'Course Code': course_code.strip(),
-                'Course Name': course_name.strip(),
-                'Total Marks': total_marks.strip(),
-                'Grade': grade.strip()
-            })
-        
+        lines = block_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if re.match(r'^\d{5,}[A-Z]?', line):
+                parts = line.split()
+                if len(parts) > 6:
+                    grade = parts[-5]
+                    course_code = parts[0]
+                    course_name = " ".join(parts[1:min(len(parts), 4)]) 
+                    subjects.append({'Course Code': course_code, 'Course Name': course_name, 'Grade': grade})
         return subjects
     
+    def get_result_summary(self):
+        if not self.students_data: return {}
+        total = len(self.students_data)
+        passed = sum(1 for s in self.students_data if s['Result Status'] == 'Pass')
+        valid_sgpa_students = [s for s in self.students_data if s.get('Has Valid SGPA')]
+        avg_sgpa = sum(s['SGPA'] for s in valid_sgpa_students) / len(valid_sgpa_students) if valid_sgpa_students else 0
+        return {
+            'total_students': total, 'passed_students': passed,
+            'failed_students': total - passed, 'average_sgpa': round(avg_sgpa, 2),
+            'pass_percentage': round((passed / total * 100) if total > 0 else 0, 1)
+        }
+
     def get_top_students(self, n=10):
-        """Get top n students by SGPA (only those with valid SGPA)"""
-        valid_students = [s for s in self.students_data if s['Has Valid SGPA']]
-        return sorted(valid_students, key=lambda x: x['SGPA'], reverse=True)[:n]
+        valid = [s for s in self.students_data if s.get('Has Valid SGPA')]
+        return sorted(valid, key=lambda x: x['SGPA'], reverse=True)[:n]
     
     def get_failed_students(self):
-        """Get all failed students"""
         return [s for s in self.students_data if s['Result Status'] == 'Fail']
-    
-    def get_result_summary(self):
-        """Get overall result summary"""
-        total_students = len(self.students_data)
-        passed_students = sum(1 for s in self.students_data if s['Result Status'] == 'Pass')
-        failed_students = total_students - passed_students
-        
-        # Students with valid SGPA
-        students_with_sgpa = [s for s in self.students_data if s['Has Valid SGPA']]
-        students_without_sgpa = total_students - len(students_with_sgpa)
-        
-        # Average SGPA only for students with valid SGPA
-        sgpas = [s['SGPA'] for s in students_with_sgpa]
-        avg_sgpa = sum(sgpas) / len(sgpas) if sgpas else 0
-        
-        return {
-            'total_students': total_students,
-            'passed_students': passed_students,
-            'failed_students': failed_students,
-            'students_with_sgpa': len(students_with_sgpa),
-            'students_without_sgpa': students_without_sgpa,
-            'pass_percentage': (passed_students / total_students * 100) if total_students > 0 else 0,
-            'average_sgpa': avg_sgpa
-        }
 
-def main():
-    st.markdown('<h1 class="main-header">🎓 Advanced Student Result Analyzer</h1>', unsafe_allow_html=True)
+# -----------------------------------------------------------------------------
+# 4. VISUALIZATIONS & PROFILE RENDERER
+# -----------------------------------------------------------------------------
+def render_student_profile(student_history):
+    # FIXED: Added color classes to h2 and p to make them visible in dark mode
+    st.markdown(f"""
+    <div class="profile-card">
+        <h2>👤 {student_history['Name']}</h2>
+        <p><strong>PRN:</strong> {student_history['PRN']} | <strong>Mother:</strong> {student_history['Mother']}</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Initialize analyzer
-    analyzer = AdvancedResultAnalyzer()
-    
-    # File upload
-    uploaded_file = st.file_uploader("📁 Upload Student Result PDF", type="pdf")
-    
-    if uploaded_file is not None:
-        with st.spinner("🔍 Analyzing PDF content..."):
-            text = analyzer.extract_text_from_pdf(uploaded_file)
+    if len(student_history['Results']) > 0:
+        results_df = pd.DataFrame(student_history['Results'])
+        
+        if not results_df.empty:
+            st.subheader("📈 Academic Progression")
+            fig = px.line(results_df, x='Exam', y='SGPA', markers=True, 
+                          title="SGPA Progression", range_y=[0, 10])
+            st.plotly_chart(fig, use_container_width=True)
             
-            if text:
-                analyzer.students_data = analyzer.parse_comprehensive_data(text)
-                
-                if analyzer.students_data:
-                    st.success(f"✅ Successfully processed {len(analyzer.students_data)} students!")
-                    
-                    # Create sidebar for navigation
-                    st.sidebar.title("📊 Navigation")
-                    analysis_option = st.sidebar.selectbox(
-                        "Choose Analysis Type",
-                        ["📈 Overview Dashboard", "🎓 Student Search", "🏆 Top Performers", 
-                         "📊 Detailed Analysis", "❌ Failed Students", "📋 Raw Data"]
-                    )
-                    
-                    if analysis_option == "📈 Overview Dashboard":
-                        show_overview_dashboard(analyzer)
-                    elif analysis_option == "🎓 Student Search":
-                        show_student_search(analyzer)
-                    elif analysis_option == "🏆 Top Performers":
-                        show_top_performers(analyzer)
-                    elif analysis_option == "📊 Detailed Analysis":
-                        show_detailed_analysis(analyzer)
-                    elif analysis_option == "❌ Failed Students":
-                        show_failed_students(analyzer)
-                    elif analysis_option == "📋 Raw Data":
-                        show_raw_data(analyzer)
-                    
-                else:
-                    st.error("❌ No student data found in the PDF")
-            else:
-                st.error("❌ Failed to extract text from PDF")
+            st.subheader("📚 Result History")
+            summary_df = results_df[['Exam', 'Seat', 'SGPA', 'Result', 'Credits']].copy()
+            st.dataframe(summary_df, use_container_width=True)
+            
+            st.subheader("📝 Detailed Marksheets")
+            for result in student_history['Results']:
+                with st.expander(f"{result['Exam']} - SGPA: {result['SGPA']} ({result['Result']})"):
+                    col1, col2 = st.columns(2)
+                    with col1: st.write(f"**Seat No:** {result['Seat']}")
+                    with col2: st.write(f"**Credits:** {result['Credits']}")
+                        
+                    if result['Subjects']:
+                        sub_df = pd.DataFrame(result['Subjects'])
+                        st.dataframe(sub_df, use_container_width=True)
+    else:
+        st.info("No detailed result history available.")
 
-def show_overview_dashboard(analyzer):
-    """Display overview dashboard with key metrics and visualizations"""
-    st.header("📈 Overview Dashboard")
-    
-    # Key metrics
+def render_overview_dashboard(analyzer):
+    st.markdown("### 📈 Performance Overview")
     summary = analyzer.get_result_summary()
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Students", summary['total_students'])
+    m2.metric("Passed", summary['passed_students'], f"{summary['pass_percentage']}%")
+    m3.metric("Failed", summary['failed_students'], delta_color="inverse")
+    m4.metric("Avg SGPA", summary['average_sgpa'])
     
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Total Students", summary['total_students'])
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Passed Students", summary['passed_students'])
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Pass Percentage", f"{summary['pass_percentage']:.1f}%")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col4:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Average SGPA", f"{summary['average_sgpa']:.2f}")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Additional metrics
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Students with SGPA", summary['students_with_sgpa'])
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-        st.metric("Students without SGPA", summary['students_without_sgpa'])
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Visualizations
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # SGPA Distribution (only for students with valid SGPA)
-        students_with_sgpa = [s for s in analyzer.students_data if s['Has Valid SGPA']]
-        sgpas = [s['SGPA'] for s in students_with_sgpa]
+    c1, c2 = st.columns(2)
+    with c1:
+        valid_students = [s for s in analyzer.students_data if s.get('Has Valid SGPA')]
+        sgpas = [s['SGPA'] for s in valid_students]
         if sgpas:
-            fig_sgpa = px.histogram(
-                x=sgpas, 
-                nbins=20,
-                title="📊 SGPA Distribution (Valid SGPA Only)",
-                labels={'x': 'SGPA', 'y': 'Number of Students'},
-                color_discrete_sequence=['#2E86AB']
-            )
-            fig_sgpa.update_layout(showlegend=False)
-            st.plotly_chart(fig_sgpa, use_container_width=True)
-        else:
-            st.info("No valid SGPA data available for visualization")
-    
-    with col2:
-        # Result Status Pie Chart
-        status_counts = {
-            'Pass': summary['passed_students'],
-            'Fail': summary['failed_students']
-        }
-        colors = ['#4CAF50', '#F44336']  # Green for Pass, Red for Fail
-        
-        fig_pie = px.pie(
-            values=list(status_counts.values()),
-            names=list(status_counts.keys()),
-            title="🎯 Result Status Distribution",
-            color=list(status_counts.keys()),
-            color_discrete_map={'Pass': '#4CAF50', 'Fail': '#F44336'}
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
-    
-    # SGPA Range Analysis (only for students with valid SGPA)
-    st.subheader("📋 SGPA Range Analysis (Valid SGPA Only)")
-    ranges = {
-        '9.0+ (Excellent)': 0,
-        '8.0-8.9 (Very Good)': 0,
-        '7.0-7.9 (Good)': 0,
-        '6.0-6.9 (Average)': 0,
-        'Below 6.0': 0
-    }
-    
-    for student in analyzer.students_data:
-        if student['Has Valid SGPA']:
-            sgpa = student['SGPA']
-            if sgpa >= 9.0:
-                ranges['9.0+ (Excellent)'] += 1
-            elif sgpa >= 8.0:
-                ranges['8.0-8.9 (Very Good)'] += 1
-            elif sgpa >= 7.0:
-                ranges['7.0-7.9 (Good)'] += 1
-            elif sgpa >= 6.0:
-                ranges['6.0-6.9 (Average)'] += 1
-            else:
-                ranges['Below 6.0'] += 1
-    
-    # Display range analysis
-    range_cols = st.columns(5)
-    range_colors = ['#2E8B57', '#3CB371', '#90EE90', '#FFD700', '#FF6347']  # Different greens to red
-    
-    for i, (range_name, count) in enumerate(ranges.items()):
-        with range_cols[i]:
-            total_valid = sum(ranges.values())
-            percentage = (count / total_valid * 100) if total_valid > 0 else 0
-            st.metric(range_name, f"{count} ({percentage:.1f}%)")
+            fig = px.histogram(x=sgpas, nbins=20, title="📊 SGPA Distribution", color_discrete_sequence=['#1f77b4'])
+            st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        labels = ['Pass', 'Fail']
+        values = [summary['passed_students'], summary['failed_students']]
+        fig = px.pie(values=values, names=labels, title="🎯 Result Status", color=labels, color_discrete_map={'Pass':'#4CAF50', 'Fail':'#F44336'})
+        st.plotly_chart(fig, use_container_width=True)
 
-def show_student_search(analyzer):
-    """Display student search functionality"""
-    st.header("🎓 Student Search")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        search_type = st.selectbox("Search by", ["Seat Number", "Name", "PRN"])
-    
-    with col2:
-        if search_type == "Seat Number":
-            search_term = st.selectbox("Select Seat Number", 
-                                     [s['Seat No'] for s in analyzer.students_data])
-        elif search_type == "Name":
-            search_term = st.selectbox("Select Name", 
-                                     [s['Name'] for s in analyzer.students_data])
-        else:  # PRN
-            search_term = st.selectbox("Select PRN", 
-                                     [s['PRN'] for s in analyzer.students_data])
-    
-    # Find student
-    if search_type == "Seat Number":
-        student = next((s for s in analyzer.students_data if s['Seat No'] == search_term), None)
-    elif search_type == "Name":
-        student = next((s for s in analyzer.students_data if s['Name'] == search_term), None)
-    else:
-        student = next((s for s in analyzer.students_data if s['PRN'] == search_term), None)
-    
-    if student:
-        st.subheader(f"Student Details: {student['Name']}")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.info(f"**Seat No:** {student['Seat No']}")
-            st.info(f"**PRN:** {student['PRN']}")
-        
-        with col2:
-            sgpa_display = f"{student['SGPA']}" if student['Has Valid SGPA'] else f"{student['SGPA_Raw']} ❌"
-            st.info(f"**SGPA:** {sgpa_display}")
-            st.info(f"**Credits:** {student['Credits']}")
-        
-        with col3:
-            status_color = "🟢" if student['Result Status'] == 'Pass' else "🔴"
-            sgpa_status = "✅" if student['Has Valid SGPA'] else "❌"
-            st.info(f"**Result:** {status_color} {student['Result Status']}")
-            st.info(f"**SGPA Status:** {sgpa_status} {'Valid' if student['Has Valid SGPA'] else 'Invalid/Missing'}")
-            st.info(f"**Subjects Passed:** {student['Passed Subjects']}/{student['Total Subjects']}")
-        
-        # Display subject grades
-        st.subheader("📚 Subject-wise Grades")
-        if student['Subjects']:
-            subjects_df = pd.DataFrame(student['Subjects'])
-            
-            # Add color coding for failed subjects
-            def color_failed_subjects(row):
-                if row['Grade'] in ['F', 'FF', 'AB', 'IC', 'ABS']:
-                    return ['background-color: #ffcccc'] * len(row)
-                return [''] * len(row)
-            
-            styled_df = subjects_df.style.apply(color_failed_subjects, axis=1)
-            st.dataframe(styled_df, use_container_width=True)
-        else:
-            st.warning("No subject data available for this student")
-    else:
-        st.error("Student not found")
+def render_top_performers(analyzer):
+    st.markdown("### 🏆 Top Performers")
+    top_students = analyzer.get_top_students(10)
+    if top_students:
+        df = pd.DataFrame(top_students)
+        st.dataframe(df[['Seat No', 'Name', 'SGPA', 'Result Status', 'Passed Subjects']], use_container_width=True)
 
-def show_top_performers(analyzer):
-    """Display top performers"""
-    st.header("🏆 Top Performers")
-    
-    top_n = st.slider("Number of top students to show", 5, 20, 10)
-    top_students = analyzer.get_top_students(top_n)
-    
-    if not top_students:
-        st.warning("❌ No students with valid SGPA found for ranking")
-        return
-    
-    # Create ranking table
-    ranking_data = []
-    for i, student in enumerate(top_students, 1):
-        ranking_data.append({
-            'Rank': i,
-            'Seat No': student['Seat No'],
-            'Name': student['Name'],
-            'SGPA': student['SGPA'],
-            'Credits': student['Credits'],
-            'Result': student['Result Status'],
-            'Subjects Passed': f"{student['Passed Subjects']}/{student['Total Subjects']}"
-        })
-    
-    ranking_df = pd.DataFrame(ranking_data)
-    st.dataframe(ranking_df, use_container_width=True)
-    
-    # Visualize top performers
-    fig = px.bar(
-        ranking_df,
-        x='Name',
-        y='SGPA',
-        title=f"🏅 Top {top_n} Students by SGPA",
-        color='SGPA',
-        color_continuous_scale='viridis',
-        text='SGPA'
-    )
-    fig.update_traces(texttemplate='%{text:.2f}', textposition='outside')
-    fig.update_layout(
-        xaxis_tickangle=-45,
-        yaxis_range=[0, 10]  # SGPA typically out of 10
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-def show_failed_students(analyzer):
-    """Display failed students analysis"""
-    st.header("❌ Failed Students Analysis")
-    
-    failed_students = analyzer.get_failed_students()
-    
-    if not failed_students:
+def render_failed_analysis(analyzer):
+    st.markdown("### ❌ Failure Analysis")
+    failed = analyzer.get_failed_students()
+    if not failed:
         st.success("🎉 All students passed!")
         return
-    
-    st.metric("Total Failed Students", len(failed_students))
-    
-    # Analyze failure reasons
-    no_sgpa_count = sum(1 for s in failed_students if not s['Has Valid SGPA'])
-    failed_subjects_count = sum(1 for s in failed_students if s['Has Valid SGPA'] and s['Passed Subjects'] < s['Total Subjects'])
-    both_reasons_count = sum(1 for s in failed_students if not s['Has Valid SGPA'] and s['Passed Subjects'] < s['Total Subjects'])
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("No Valid SGPA", no_sgpa_count)
-    
-    with col2:
-        st.metric("Failed Subjects", failed_subjects_count)
-    
-    with col3:
-        st.metric("Both Reasons", both_reasons_count)
-    
-    # Display failed students table
-    failed_data = []
-    for student in failed_students:
-        failure_reason = []
-        if not student['Has Valid SGPA']:
-            failure_reason.append("No Valid SGPA")
-        if student['Passed Subjects'] < student['Total Subjects']:
-            failure_reason.append("Failed Subjects")
-        
-        failed_data.append({
-            'Seat No': student['Seat No'],
-            'Name': student['Name'],
-            'SGPA': student['SGPA_Raw'],
-            'Subjects Passed': f"{student['Passed Subjects']}/{student['Total Subjects']}",
-            'Failure Reason': ', '.join(failure_reason)
-        })
-    
-    failed_df = pd.DataFrame(failed_data)
-    st.dataframe(failed_df, use_container_width=True)
-    
-    # Failure reasons pie chart
-    failure_reasons = {
-        'No Valid SGPA': no_sgpa_count,
-        'Failed Subjects': failed_subjects_count,
-        'Both Reasons': both_reasons_count
-    }
-    
-    fig = px.pie(
-        values=list(failure_reasons.values()),
-        names=list(failure_reasons.keys()),
-        title="📊 Failure Reasons Distribution",
-        color_discrete_sequence=['#FF6B6B', '#FFA726', '#EF5350']
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    df = pd.DataFrame(failed)
+    st.dataframe(df[['Seat No', 'Name', 'SGPA_Raw', 'Passed Subjects']], use_container_width=True)
 
-def show_detailed_analysis(analyzer):
-    """Display detailed analysis"""
-    st.header("📊 Detailed Analysis")
+def render_detailed_data(analyzer):
+    st.markdown("### 📋 Student List")
+    df = pd.DataFrame([ {k:v for k,v in s.items() if k!='Subjects'} for s in analyzer.students_data ])
     
-    # Create comprehensive dataframe
-    students_df = pd.DataFrame([
-        {k: v for k, v in student.items() if k != 'Subjects'} 
-        for student in analyzer.students_data
-    ])
-    
-    # Interactive filters
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        min_sgpa = st.slider("Minimum SGPA", 0.0, 10.0, 0.0, 0.1)
-    
-    with col2:
-        result_filter = st.selectbox("Result Status", ["All", "Pass", "Fail"])
-    
-    with col3:
-        sgpa_status = st.selectbox("SGPA Status", ["All", "Valid SGPA", "Invalid/Missing SGPA"])
-    
-    # Apply filters
-    filtered_df = students_df[students_df['SGPA'] >= min_sgpa]
-    
-    if result_filter != "All":
-        filtered_df = filtered_df[filtered_df['Result Status'] == result_filter]
-    
-    if sgpa_status == "Valid SGPA":
-        filtered_df = filtered_df[filtered_df['Has Valid SGPA'] == True]
-    elif sgpa_status == "Invalid/Missing SGPA":
-        filtered_df = filtered_df[filtered_df['Has Valid SGPA'] == False]
-    
-    st.subheader(f"📋 Filtered Students ({len(filtered_df)} found)")
-    st.dataframe(filtered_df, use_container_width=True)
-    
-    # Download option
-    csv = filtered_df.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Filtered Data as CSV",
-        data=csv,
-        file_name="filtered_student_data.csv",
-        mime="text/csv"
-    )
-
-def show_raw_data(analyzer):
-    """Display raw data and extraction information"""
-    st.header("📋 Raw Data & Extraction Info")
-    
-    tab1, tab2 = st.tabs(["Student Data", "Raw Text"])
-    
-    with tab1:
-        st.subheader("All Student Data")
-        students_df = pd.DataFrame([
-            {k: v for k, v in student.items() if k != 'Subjects'} 
-            for student in analyzer.students_data
-        ])
-        st.dataframe(students_df, use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    with c1: min_sgpa = st.slider("Min SGPA", 0.0, 10.0, 0.0)
+    with c2: status = st.selectbox("Status", ["All", "Pass", "Fail"])
+    with c3: sort_order = st.selectbox("Sort", ["High to Low", "Low to High"])
         
-        # Statistics
-        st.subheader("Data Statistics")
-        st.write(students_df.describe())
+    filtered = df[df['SGPA'] >= min_sgpa]
+    if status != "All": filtered = filtered[filtered['Result Status'] == status]
+    if sort_order == "High to Low": filtered = filtered.sort_values(by='SGPA', ascending=False)
+    else: filtered = filtered.sort_values(by='SGPA', ascending=True)
     
-    with tab2:
-        st.subheader("Raw Extracted Text")
-        st.text_area("PDF Text", analyzer.raw_text, height=400)
+    st.write(f"Showing {len(filtered)} students")
+    st.dataframe(filtered, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# 5. AUTHENTICATION & MAIN FLOW
+# -----------------------------------------------------------------------------
+class AuthenticationManager:
+    def __init__(self, firebase_manager):
+        self.fm = firebase_manager
+
+    def show_login_page(self):
+        st.markdown('<h1 class="main-header">🎓 Student Result Portal</h1>', unsafe_allow_html=True)
+        t1, t2 = st.tabs(["🔐 Login", "📝 Register"])
+        
+        with t1:
+            with st.form("login"):
+                email = st.text_input("Email")
+                pwd = st.text_input("Password", type="password")
+                role = st.selectbox("Role", ["Teacher", "Student"])
+                if st.form_submit_button("Login"):
+                    success, result = self.fm.verify_user(email, pwd)
+                    if success:
+                        if result['role'] == role.lower():
+                            st.session_state.user = result
+                            st.session_state.logged_in = True
+                            st.session_state.role = role.lower()
+                            st.rerun()
+                        else:
+                            st.error(f"Role mismatch. Registered as '{result['role']}'.")
+                    else:
+                        st.error(result)
+        
+        with t2:
+            with st.form("reg"):
+                name = st.text_input("Name")
+                email = st.text_input("Email")
+                pwd = st.text_input("Password", type="password")
+                role = st.selectbox("Role", ["Teacher", "Student"])
+                if st.form_submit_button("Register"):
+                    if len(pwd) >= 6:
+                        uid = self.fm.create_user(email, pwd, role.lower(), name)
+                        if uid:
+                            success, result = self.fm.verify_user(email, pwd)
+                            if success:
+                                st.session_state.user = result
+                                st.session_state.logged_in = True
+                                st.session_state.role = role.lower()
+                                st.rerun()
+                    else:
+                        st.error("Password must be > 6 chars")
+
+def show_teacher_dashboard(fm):
+    st.markdown(f'<h1 class="main-header">👨‍🏫 Teacher Dashboard <span class="role-badge teacher-badge">TEACHER</span></h1>', unsafe_allow_html=True)
+    menu = ["📤 Upload & Analyze", "📁 Saved Results", "👥 Global Search (History)"]
+    choice = st.sidebar.selectbox("Menu", menu)
+    
+    if choice == "📤 Upload & Analyze":
+        st.header("Upload New Result PDF")
+        uploaded = st.file_uploader("Choose PDF", type="pdf")
+        exam_tag = st.text_input("Exam Name (e.g., 'SE 2024', 'TE 2025')", placeholder="SE May 2024")
+        
+        if uploaded and exam_tag:
+            analyzer = AdvancedResultAnalyzer()
+            text = analyzer.extract_text_from_pdf(uploaded)
+            if text:
+                data = analyzer.parse_comprehensive_data(text)
+                if data:
+                    analyzer.students_data = data
+                    st.success(f"Processed {len(data)} students")
+                    t1, t2, t3, t4 = st.tabs(["Overview", "Top Performers", "Failures", "Detailed List"])
+                    with t1: render_overview_dashboard(analyzer)
+                    with t2: render_top_performers(analyzer)
+                    with t3: render_failed_analysis(analyzer)
+                    with t4: render_detailed_data(analyzer)
+                    
+                    if st.button("💾 Save to Database", type="primary"):
+                        summary = analyzer.get_result_summary()
+                        fm.save_result_data(uploaded.name, exam_tag, data, st.session_state.user['name'], summary)
+                else:
+                    st.error("No data found")
+        elif uploaded and not exam_tag:
+            st.warning("⚠️ Please enter an Exam Name (e.g., 'SE 2023') to enable saving.")
+
+    elif choice == "📁 Saved Results":
+        st.header("Previous Uploads")
+        files = fm.get_all_result_files()
+        if not files: st.info("No saved results found.")
+        for f in files:
+            time_str = f.get('uploaded_at', datetime.datetime.now())
+            if isinstance(time_str, datetime.datetime): time_str = time_str.strftime('%Y-%m-%d %H:%M')
+            
+            with st.expander(f"📄 {f['file_name']} | 🏷️ {f.get('exam_tag', 'N/A')} | 📅 {time_str}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Total Students:** {f.get('total_students', 0)}")
+                with col2:
+                    if st.button(f"Load Analysis", key=f['id']):
+                        st.session_state.current_analysis = f
+                
+                if st.session_state.get('current_analysis', {}).get('id') == f['id']:
+                    analyzer = AdvancedResultAnalyzer()
+                    analyzer.students_data = f['students_data']
+                    st.markdown("---")
+                    t1, t2, t3, t4 = st.tabs(["Overview", "Top Performers", "Failures", "Detailed List"])
+                    with t1: render_overview_dashboard(analyzer)
+                    with t2: render_top_performers(analyzer)
+                    with t3: render_failed_analysis(analyzer)
+                    with t4: render_detailed_data(analyzer)
+
+    elif choice == "👥 Global Search (History)":
+        st.header("🌍 Global Student Search & History")
+        st.info("Enter PRN or Name to see aggregated history from all uploaded files.")
+        search_term = st.text_input("Enter PRN (Recommended) or Name")
+        
+        if search_term:
+            with st.spinner("Searching database..."):
+                history_results = fm.get_student_history(search_term)
+                
+                if history_results:
+                    st.success(f"Found {len(history_results)} student profile(s)!")
+                    for student_history in history_results:
+                        render_student_profile(student_history)
+                else:
+                    st.warning("No student found.")
+
+def show_student_dashboard(fm):
+    st.markdown(f'<h1 class="main-header">🎓 Student Portal <span class="role-badge student-badge">STUDENT</span></h1>', unsafe_allow_html=True)
+    st.header("🔍 Check Your Results History")
+    search_term = st.text_input("Enter your PRN (Preferred) or Name")
+    
+    if search_term:
+        with st.spinner("Searching records..."):
+            history_results = fm.get_student_history(search_term)
+            
+            if history_results:
+                for student_history in history_results:
+                    render_student_profile(student_history)
+            else:
+                st.error("No records found. Check PRN.")
+
+def main():
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.user = None
+    
+    fm = FirebaseManager()
+    auth = AuthenticationManager(fm)
+    
+    if not st.session_state.logged_in:
+        auth.show_login_page()
+    else:
+        with st.sidebar:
+            st.write(f"👤 **{st.session_state.user['name']}**")
+            if st.button("🚪 Logout"):
+                st.session_state.logged_in = False
+                st.session_state.pop('id_token', None)
+                st.session_state.pop('user_id', None)
+                st.session_state.user = None
+                st.rerun()
+        
+        if st.session_state.role == 'teacher':
+            show_teacher_dashboard(fm)
+        else:
+            show_student_dashboard(fm)
 
 if __name__ == "__main__":
     main()
