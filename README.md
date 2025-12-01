@@ -202,6 +202,5 @@ Released under the **MIT License**.
 <div align="center">
 
 ### ❤️ Made with Passion using Streamlit & Python  
-If you want a **banner**, **logo**, or **flowchart diagram**, just ask!
 
 </div>
