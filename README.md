@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="https://github.com/AaradhyaproK/result_analysis_with_data_visualization/blob/main/banner-result.png" width="100%">
+</p>
+
+
+
 <div align="center">
 
 # 🎓 <span style="color:#ff4b4b; font-weight:800;">Student Result Analyzer Pro</span>  
