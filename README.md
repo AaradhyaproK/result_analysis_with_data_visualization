@@ -1,7 +1,9 @@
 <div align="center">
 
-# 🎓 Student Result Analyzer Pro
-### 🚀 The Next-Gen Academic Performance Tracker
+# 🎓 <span style="color:#ff4b4b; font-weight:800;">Student Result Analyzer Pro</span>  
+### 🚀 <span style="color:#0099ff;">The Next-Gen Academic Performance Tracker</span>
+
+<br>
 
 ![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
@@ -9,64 +11,80 @@
 ![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
 
-<p align="center">
-  <b>Analyze. Visualize. Archive.</b><br>
-  Transform static PDF result sheets into dynamic, searchable, and visualized student profiles.
-</p>
+<br>
+
+### <b>Analyze · Visualize · Archive</b>  
+Transform static PDFs into intelligent academic dashboards.
+
+---
 
 </div>
 
 ---
 
-## 🌟 Overview
+## 🌟 **Overview**
 
-**Student Result Analyzer Pro** is an advanced web application designed to solve the chaos of managing university result PDFs. It parses complex PDF marksheets (optimized for SPPU), extracts granular student data, stores it in the cloud, and generates insightful analytics.
+**Student Result Analyzer Pro** is a smart PDF-processing platform that reads SPPU-style university result sheets and converts them into structured, searchable, and visual student profiles.
 
-Unlike simple parsers, this tool builds a **Student Timeline**, aggregating results from multiple exams using the student's **PRN (Permanent Registration Number)** to show academic progression over time.
+It builds an **Academic Timeline** for each PRN, showing semester-wise performance and analytics.
 
 ---
 
-## ✨ Key Features
+## ✨ **Key Features**
 
 | Feature | Description |
-| :--- | :--- |
-| **🔐 Role-Based Access** | Secure authentication for **Teachers** (Upload/Analyze) and **Students** (View History). |
-| **📄 Smart Parsing Engine** | Uses Regex to extract Seat No, PRN, SGPA, and Subject Grades from unstructured PDF text. |
-| **📈 Dynamic Analytics** | Interactive histograms, pie charts, and trend lines using **Plotly**. |
-| **🌍 Global Search** | Search a PRN once and see results aggregated from **every PDF** ever uploaded. |
-| **🧠 Intelligent Logic** | Auto-corrects Result Status based on valid SGPA (Handles University logic nuances). |
-| **☁️ Cloud Persistence** | Powered by **Google Firestore**, ensuring data is safe and available anytime. |
+|--------|-------------|
+| 🔐 **Role-Based Access** | Teachers upload PDFs; students view their performance. |
+| 📄 **Smart PDF Parser** | Extracts PRN, SGPA, subjects, grades with Regex. |
+| 📈 **Analytics Engine** | Trendlines, histograms, pie charts (Plotly). |
+| 🌍 **Global PRN Search** | View complete academic history across all uploads. |
+| 🧠 **Logic Engine** | SGPA-based Pass/Fail validator (SPPU rule-aware). |
+| ☁️ **Firestore Cloud DB** | Fast, secure, real-time database. |
 
 ---
 
-## 🏗️ Architecture & Logic
+## 🏗️ **Architecture & Parsing Logic**
 
-### 1. The Parsing Engine (`AdvancedResultAnalyzer`)
-The core logic resides in how we treat the PDF text.
-*   **Block Segmentation:** The PDF is treated as a continuous stream of text. We use `Regex` to split this stream into "Student Blocks" using the `SEAT NO.:` pattern as a delimiter.
-*   **Data Extraction:** Within each block, we extract:
-    *   **Identity:** Name, Mother's Name, PRN.
-    *   **Scores:** SGPA, Total Credits.
-    *   **Subject Grid:** A sub-parser iterates through lines starting with Course Codes (e.g., `210241`) to grab grades.
-*   **Validation Logic:**
-    > **Pass/Fail Rule:** If `SGPA > 0`, the student is marked **Pass**. If SGPA is `0.0`, `--`, or missing, the status is **Fail**. This overrides individual 'F' grades in non-mandatory subjects.
+### 🔍 1. **Parsing Engine (`AdvancedResultAnalyzer`)**
 
-2. Firestore Database Schema
-Collection: users
+- Splits PDF text using:
 
-Stores profile + role (teacher/student):
+```
+SEAT NO.:
+```
 
+- Extracts:
+  - Student Name  
+  - Mother’s Name  
+  - PRN  
+  - Subject List  
+  - SGPA & Credits  
+
+### 🧠 Result Logic
+
+```
+IF SGPA > 0  → PASS  
+ELSE         → FAIL
+```
+
+This overrides subject-level F grades to match actual university logic.
+
+---
+
+## 🗂️ **Firestore Schema**
+
+### **📁 Collection: users**
+```json
 {
   "email": "teacher@college.edu",
   "role": "teacher",
   "name": "Prof. X",
   "last_login": "2024-10-27T10:00:00Z"
 }
+```
 
-Collection: results
-
-Stores uploaded result sets:
-
+### **📁 Collection: results**
+```json
 {
   "file_name": "SE_Computer_May2024.pdf",
   "exam_tag": "SE 2024",
@@ -86,34 +104,40 @@ Stores uploaded result sets:
     }
   ]
 }
+```
 
-🚀 Installation & Setup
-Prerequisites
+---
 
-Python 3.8+
+## 🚀 **Installation & Setup**
 
-Firebase Project (Authentication + Firestore enabled)
-
-1. Clone the Repository
+### 1️⃣ Clone the Repo
+```bash
 git clone https://github.com/yourusername/student-result-analyzer.git
 cd student-result-analyzer
+```
 
-2. Create Virtual Environment
-Windows:
+### 2️⃣ Create Virtual Environment
+**Windows**
+```bash
 python -m venv venv
 venv\Scripts\activate
+```
 
-Mac/Linux:
+**Mac/Linux**
+```bash
 python3 -m venv venv
 source venv/bin/activate
+```
 
-3. Install Dependencies
+### 3️⃣ Install Dependencies
+```bash
 pip install streamlit pandas PyPDF2 plotly requests
+```
 
-4. Configure Firebase
+### 4️⃣ Configure Firebase  
+Update in `app.py`:
 
-Edit app.py and update:
-
+```python
 FIREBASE_CONFIG = {
     "apiKey": "YOUR_API_KEY",
     "authDomain": "your-project.firebaseapp.com",
@@ -122,68 +146,62 @@ FIREBASE_CONFIG = {
     "messagingSenderId": "...",
     "appId": "..."
 }
+```
 
-5. Run the Application
+### 5️⃣ Run App
+```bash
 streamlit run app.py
+```
 
-📖 Usage Guide
-👨‍🏫 For Teachers
+---
 
-Sign up selecting Teacher role.
+## 📖 **Usage Guide**
 
-Open Upload & Analyze.
+### 👨‍🏫 **Teacher Dashboard**
+- Upload PDF  
+- Tag exam (e.g., TE 2024)  
+- Parse & store in Firestore  
+- Global PRN search  
 
-Upload the result PDF.
+### 🎓 **Student Dashboard**
+- Login → Enter PRN  
+- View SGPA timeline  
+- Subjects + grades  
+- Pass/Fail summary  
 
-Enter an Exam Tag (e.g., "TE 2024").
+---
 
-Save the parsed results to Firestore.
+## 🛠️ **Troubleshooting**
 
-Use Global Search to view any student’s aggregated academic report.
+| Issue | Fix |
+|------|-----|
+| ❗ Role Mismatch | Re-login with correct role. |
+| ❗ Token Missing | Log out & log in again. |
+| ❗ White Text | Light mode → Auto CSS applies. |
+| ❗ PDF Upload Error | Ensure PDF is text-readable (not scanned). |
 
-🎓 For Students
+---
 
-Sign up selecting Student role.
+## 🤝 **Contributing**
 
-Enter your PRN.
-
-Instantly view:
-
-Your SGPA timeline
-
-Subject-wise grades
-
-Pass/Fail overview
-
-🛠️ Troubleshooting
-Issue	Solution
-"Role Mismatch"	Ensure you're logging in with the same role selected during sign-up.
-"Token Missing"	Session expired → Log out and log in again.
-White Text (Invisible)	App is optimized for dark mode; CSS auto-adjusts on light mode.
-Upload Fails	Ensure the PDF is text-readable (not scanned) and follows SPPU format.
-🤝 Contributing
-
-Fork the repo
-
-Create a branch
-
+```bash
 git checkout -b feature/AmazingFeature
-
-
-Commit your changes
-
-git commit -m "Add some AmazingFeature"
-
-
-Push your branch
-
+git commit -m "Add AmazingFeature"
 git push origin feature/AmazingFeature
+```
+Then open a Pull Request.
 
+---
 
-Open a Pull Request
+## 📜 **License**
 
-📜 License
+Released under the **MIT License**.
 
-This project is licensed under the MIT License.
+---
 
-❤️ Made with Love using Streamlit
+<div align="center">
+
+### ❤️ Made with Passion using Streamlit & Python  
+If you want a **banner**, **logo**, or **flowchart diagram**, just ask!
+
+</div>
