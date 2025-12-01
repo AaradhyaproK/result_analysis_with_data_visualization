@@ -51,77 +51,69 @@ The core logic resides in how we treat the PDF text.
 *   **Validation Logic:**
     > **Pass/Fail Rule:** If `SGPA > 0`, the student is marked **Pass**. If SGPA is `0.0`, `--`, or missing, the status is **Fail**. This overrides individual 'F' grades in non-mandatory subjects.
 
-### 2. Database Schema (NoSQL)
+2. Firestore Database Schema
+Collection: users
 
-We use two primary collections in Firestore:
+Stores profile + role (teacher/student):
 
-<details>
-<summary><b>📂 Collection: users</b> (Click to expand)</summary>
-
-Stores authentication profiles and roles.
-```json
 {
-  "documentId": "firebase_uid",
-  "email": "professor@college.edu",
-  "name": "Dr. Smith",
+  "email": "teacher@college.edu",
   "role": "teacher",
-  "created_at": "2023-10-27T10:00:00Z"
+  "name": "Prof. X",
+  "last_login": "2024-10-27T10:00:00Z"
 }
-</details>
-<details>
-<summary><b>📂 Collection: result_files</b> (Click to expand)</summary>
-Stores the raw parsed data from every PDF upload.
-code
-JSON
+
+Collection: results
+
+Stores uploaded result sets:
+
 {
   "file_name": "SE_Computer_May2024.pdf",
   "exam_tag": "SE 2024",
-  "uploaded_by": "Dr. Smith",
   "students_data": [
     {
       "Name": "Adithyan K S",
       "PRN": "72266975F",
       "SGPA": 8.5,
-      "Result Status": "Pass",
-      "Subjects": [...]
+      "Subjects": [
+        {
+          "Code": "210251",
+          "Name": "Data Structures",
+          "Grade": "A+",
+          "Credits": 4
+        }
+      ]
     }
   ]
 }
-</details>
-3. The Aggregation Algorithm
-When you search for a student in the Global Search:
-The app fetches ALL documents from result_files.
-It iterates through thousands of student records in memory.
-It filters by PRN (Unique Identifier).
-It groups these records into a StudentHistory object, sorts them by date, and generates a Timeline Graph.
+
 🚀 Installation & Setup
-Follow these steps to get the system running locally.
 Prerequisites
+
 Python 3.8+
-A Firebase Project (Firestore & Auth enabled)
-Step 1: Clone the Repo
-code
-Bash
+
+Firebase Project (Authentication + Firestore enabled)
+
+1. Clone the Repository
 git clone https://github.com/yourusername/student-result-analyzer.git
 cd student-result-analyzer
-Step 2: Virtual Environment
-code
-Bash
-# Windows
+
+2. Create Virtual Environment
+Windows:
 python -m venv venv
 venv\Scripts\activate
 
-# Mac/Linux
+Mac/Linux:
 python3 -m venv venv
 source venv/bin/activate
-Step 3: Install Dependencies
-code
-Bash
+
+3. Install Dependencies
 pip install streamlit pandas PyPDF2 plotly requests
-Step 4: Configure Firebase
-Open app.py and find the FIREBASE_CONFIG dictionary. Replace the values with your project's credentials:
-code
-Python
+
+4. Configure Firebase
+
+Edit app.py and update:
+
 FIREBASE_CONFIG = {
     "apiKey": "YOUR_API_KEY",
     "authDomain": "your-project.firebaseapp.com",
@@ -130,34 +122,68 @@ FIREBASE_CONFIG = {
     "messagingSenderId": "...",
     "appId": "..."
 }
-Step 5: Run the App
-code
-Bash
+
+5. Run the Application
 streamlit run app.py
+
 📖 Usage Guide
 👨‍🏫 For Teachers
-Register: Create an account selecting the Teacher role.
-Upload: Navigate to "Upload & Analyze".
-Tag: Upload a PDF and give it an Exam Name (e.g., "TE 2023").
-Save: Click "Save to Database" to archive the results.
-Search: Use "Global Search" to see the full history of any student.
+
+Sign up selecting Teacher role.
+
+Open Upload & Analyze.
+
+Upload the result PDF.
+
+Enter an Exam Tag (e.g., "TE 2024").
+
+Save the parsed results to Firestore.
+
+Use Global Search to view any student’s aggregated academic report.
+
 🎓 For Students
-Register: Create an account selecting the Student role.
-Search: Enter your PRN.
-View: See your Academic Progression graph and detailed subject breakdowns for every exam recorded in the system.
+
+Sign up selecting Student role.
+
+Enter your PRN.
+
+Instantly view:
+
+Your SGPA timeline
+
+Subject-wise grades
+
+Pass/Fail overview
+
 🛠️ Troubleshooting
 Issue	Solution
-"Role Mismatch"	Ensure you are logging in with the same role (Student/Teacher) you selected during registration.
-"Authentication Token Missing"	This happens if the session resets. Log out and Log in again to refresh the token.
-White Text / Invisible Text	The app is optimized for Dark Mode. If using Light Mode, the custom CSS in the code handles the Profile Card visibility.
-Upload Fails	Ensure the PDF is text-readable (not a scanned image) and follows the standard SPPU format.
+"Role Mismatch"	Ensure you're logging in with the same role selected during sign-up.
+"Token Missing"	Session expired → Log out and log in again.
+White Text (Invisible)	App is optimized for dark mode; CSS auto-adjusts on light mode.
+Upload Fails	Ensure the PDF is text-readable (not scanned) and follows SPPU format.
 🤝 Contributing
-Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are greatly appreciated.
-Fork the Project
-Create your Feature Branch (git checkout -b feature/AmazingFeature)
-Commit your Changes (git commit -m 'Add some AmazingFeature')
-Push to the Branch (git push origin feature/AmazingFeature)
+
+Fork the repo
+
+Create a branch
+
+git checkout -b feature/AmazingFeature
+
+
+Commit your changes
+
+git commit -m "Add some AmazingFeature"
+
+
+Push your branch
+
+git push origin feature/AmazingFeature
+
+
 Open a Pull Request
-<div align="center">
-Made with ❤️ using Streamlit
-</div>
+
+📜 License
+
+This project is licensed under the MIT License.
+
+❤️ Made with Love using Streamlit
